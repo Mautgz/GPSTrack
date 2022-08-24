@@ -1,0 +1,590 @@
+<% include tiles/header %>
+<% include tiles/top %>
+
+<div class="map-page">
+  <div id="map_canvas"></div>
+
+  <div id="openUserList"><i class="fas fa-users"></i></div>
+  <div id="userList">
+    <div class="header-panel">
+      <div class="nav-icon"><i class="fas fa-users"></i></div> 
+      <div class="title">Aktywni użytkownicy (<span id="userCount">0</span>)</div>
+      <div id="closeUserList" class="close-panel"><i class="fas fa-times"></i></div>
+    </div>
+    <div class="panel-content">
+    <div class="user-list">
+      <div class="header">
+        <div class="checkbox">
+            <div class="custom-control custom-checkbox">
+              <input type="checkbox" checked class="custom-control-input" id="selectAllUsers">
+              <label class="custom-control-label" for="selectAllUsers">&nbsp;Obserwuj wszystkich</label>
+            </div>
+        </div>
+      </div>
+      <div class="empty-list">Brak aktywnych użytkowników</div>
+    </div>
+    <div class="user-info">
+      <div class="user-info-wrap">
+      <div class="top-info">
+        <div id="userClickPin" class="pin"><img id="userPin" src="/images/red.svg" /></div>
+        <div id="userFollow" class="follow">
+          <i class="fas fa-location-arrow"></i>
+          <span id="userFollowDesc" class="desc">FOLLOW</span>
+        </div>
+        <div id="userOnline" class="online active">
+          <i class="fas fa-satellite-dish"></i>
+          <span id="userOnlineDesc" class="desc">ONLINE</span>
+        </div>
+      </div>
+      <table class="table table-borderless table-info">
+        <tr>
+          <th rowspan="2" class="gps-span"><i class="fas fa-map-marker-alt"></i></th>
+          <td id="userLatitude">Mark</td>
+        </tr>
+        <tr>
+          <td id="userLongitude">Jacob</td>
+        </tr>
+        <tr>
+          <th><i class="fas fa-tachometer-alt"></i></th>
+          <td><span id="userSpeed">12</span> km/h</td>
+        </tr>
+        <tr>
+          <th><i class="fas fa-mountain"></i></i></th>
+          <td><span id="userAltitude">333</span> m</td>
+        </tr>
+        <tr>
+          <th><i class="far fa-check-circle"></i></i></th>
+          <td><span id="userAccuracy">12</span> m</td>
+        </tr>
+      </table>
+      <div class="form-group user-map-form">
+        <label for="user-map-input">Bezpośredni link</label>
+        <input type="text" name="user-map-input" id="userMapLink" class="form-control user-map-input" value="">
+      </div>
+      <div class="user-map-link">
+        <button type="button" class="btn btn-link" id="copyUserMapLink">Skopiuj link</button> 
+        <a id="openUserMapLink" href="#" >Otwórz link</a>
+      </div>
+      <div class="user-tracks-link">
+        <a id="openUserTracksLink" href="#" >Pokaż zapisane trasy</a>
+      </div>
+    </div>
+    </div>
+    </div>
+  </div>
+</div>
+
+
+<% include tiles/footerScript %>
+
+<script src="/lib/stompjs/stomp.js"></script>
+
+<script>
+$(function() {
+  var token = "<%= user.token %>";
+  var subs = {};
+  var markers = {};
+  var polylines = {};
+  var users = {};
+  var WSClient = null;
+  var lastLocations = {};
+  var userPanelActive = {isActive: false, userID: ""};
+  var followUser = {isActive: false, userID: ""};
+  var bounds = new google.maps.LatLngBounds();
+
+  function loadUsers() {
+    var url = "http://"+IP+":8080/api/users";
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+    xhr.responseType = 'json';
+    xhr.onload = function () {
+      var status = xhr.status;
+      if (status === 200) {
+        //console.log(xhr.response);
+        
+        saveUsers(xhr.response);
+      } else {
+        console.log("unauthotirize");
+      }
+    };
+    
+    xhr.send();
+  }
+
+  function saveUsers(data) {
+    users = {};
+    for(var i = 0; i < data.length;i++) {
+      users[data[i]._id] = data[i];
+    }
+    WebSocketConnect();
+    
+  }
+
+  function WebSocketConnect() {
+    WSClient = webstomp.client("ws://"+IP+":8080/connect-ws", {debug: false, protocols: ['v10.stomp', 'v11.stomp', 'v12.stomp', token]});
+    WSClient.connect({}, function() {
+      //console.log("connected");
+      subscribeAllUsers();
+    }, function(error) {
+      //alert("WebSocket Error");
+      console.log(error);
+    });
+
+  }
+  function subscribeAllUsers() {
+    for(var userID in users) {
+      subscribeUser(userID);
+    }
+  }
+
+  function subscribeUser(userID) {
+    if(!WSClient) {
+      console.log("WSClient is null");
+      return;
+    }
+    if(!subs[userID])
+      subs[userID] = WSClient.subscribe("/topic/get/" + userID, onLocationReceive);
+  }
+
+  function unsubscribeUser(userID) {
+    if(!WSClient) {
+      console.log("WSClient is null");
+      return;
+    }
+    if(subs[userID]) {
+      subs[userID].unsubscribe();
+      delete subs[userID];
+    }
+  }
+
+
+  function onLocationReceive(message) {
+    //console.log("msg: " + message.body);
+    //client.send('/ws/send/2', JSON.stringify({a:"ala"}));
+
+    var loc = JSON.parse(message.body);
+    if(loc.latitude) {
+       setMarker(loc);
+       setLastLocation(loc);
+       setUserOnline(loc);
+       if(userPanelActive.isActive && userPanelActive.userID === loc.userID)
+        setUserInfoLocation(loc);
+    }
+    else {
+      console.log("Error message");
+      console.log(message);
+    }
+  }
+
+  function createMarker(location, color) {
+    return new google.maps.Marker({
+      map: map,
+      icon: {
+        url: "/images/"+color.name+".svg",
+        scaledSize: new google.maps.Size(25, 41),
+        labelOrigin: new google.maps.Point(13, -10)
+      },
+      labelClass: "labels",
+      label: {
+        text: users[location.userID].username,
+        color: '#' + color.hex[1],
+        fontSize: '12px'
+      }
+    });
+  }
+
+  function createPolyline(colorHex) {
+    var polyline = new google.maps.Polyline({
+      map: map,
+      path: [],
+      geodesic: true,
+      strokeColor: '#' + colorHex,
+      strokeOpacity: 1.0,
+      strokeWeight: 4
+    });
+
+    return polyline;
+  }
+
+  function addUserToMap(location) {
+
+    if(!users[location.userID].color) {
+        //generate color for marker and polyline
+        var markersCount = Object.keys(markers).length;
+        var color = markerColors[markersCount % markerColors.length];
+        users[location.userID].color = color;
+      }
+
+      var color = users[location.userID].color;
+      var marker = createMarker(location, color);
+      markers[location.userID] = marker;
+
+      var polyline = createPolyline(color.hex[0]);
+      polylines[location.userID] = polyline;
+
+      if($("#checkbox-"+location.userID).length === 0)
+        loadUserUI(location.userID, color.name);
+
+      if(Object.keys(markers).length === 1) {
+        $("#userList .empty-list").css("display", "none");
+        $(".user-info-wrap").css("display", "block");
+      }
+
+      addMarkerClickEvent(marker, location.userID);
+  }
+
+  function setMarker(location) {
+    var latLong = new google.maps.LatLng(location.latitude, location.longitude);
+    
+    if(!markers[location.userID]) { // when user not exists
+      addUserToMap(location);
+
+      bounds.extend(latLong);
+      if(followUser.isActive == false)
+        map.fitBounds(bounds);
+    }
+
+    polylines[location.userID].getPath().push(latLong); //update route
+    markers[location.userID].setPosition(latLong); //update marker position
+    
+    if(followUser.isActive && followUser.userID === location.userID)
+      followUserFun(location.userID, latLong);
+  }
+
+  function followUserFun(userID, latLong) {
+    map.panTo(latLong);
+  }
+
+  function setLastLocation(location) {
+    if(!lastLocations[location.userID]) {
+      lastLocations[location.userID] = {location: location, isActive: true};
+    }
+      
+    lastLocations[location.userID].location = location;
+  }
+
+  function setUserOnline(location) {
+    if(!lastLocations[location.userID].isActive) {
+      lastLocations[location.userID].isActive = true;
+      $("#active-" + location.userID).addClass("active");
+      if(userPanelActive.isActive && userPanelActive.userID === location.userID)
+        setUserInfoState(true);
+    }
+  }
+
+  function startCheckUserOnline() {
+    setTimeout(function() {
+      checkUserOnline();
+		  setInterval(function() {
+        checkUserOnline();
+		  }, 5000);
+	  }, 2000);
+  } 
+
+  function checkUserOnline(delay = 30000) {
+    var activeUsers = 0;
+    for(var userID in lastLocations) {
+      if(Date.now() - lastLocations[userID].location.timestamp > delay) {
+        if(!lastLocations[userID].isActive) //if false then continue because it has been changed earlier
+          continue;
+
+        $("#active-" + userID).removeClass("active");
+        $("#active-" + userID).attr("title", "offline");
+        lastLocations[userID].isActive = false;
+        if(userPanelActive.isActive && userPanelActive.userID === lastLocations[userID].location.userID)
+          setUserInfoState(false);
+      }
+      else {
+        activeUsers++;
+      }
+    }
+    $("#userCount").text(activeUsers);
+  }
+
+  function addMarkerClickEvent(marker, userID) {
+    marker.addListener('click', function() {
+      map.panTo(marker.getPosition());
+      animateZoomHelper(map, 17);
+      showUserInfo(userID);
+      });
+
+  }
+
+  $("#openUserList").click(function () {
+    showUserList()
+  });
+
+  $("#userList .close-panel").click(function () {
+    $("#userList").fadeOut();
+    $("#openUserList").fadeIn();
+  });
+
+  function showUserList() {
+    $("#openUserList").fadeOut(0);
+    $("#userList").fadeIn();
+  }
+  showUserList();
+
+  function loadUserUI(userID, color) {
+    var user = users[userID];
+    var output = "";
+    var elUser = document.createElement("div");
+    $(elUser).attr("user-id", user._id);
+    $(elUser).addClass("user");
+
+    //checkbox
+    var elCheckbox = document.createElement("div");
+    $(elCheckbox).addClass("checkbox");
+    var checkboxDiv = document.createElement("div");
+    $(checkboxDiv).addClass("custom-control custom-checkbox");
+
+    var checkboxInput = $('<input type="checkbox" class="custom-control-input" checked id="checkbox-'+userID+'">');
+    checkboxInput.change(function() {
+      var userID = $(this).attr("id").substring(9);
+      //console.log("user: " + userID + " is: " + $(this).is(':checked'));
+      if($(this).is(':checked'))
+        subscribeUser(userID);
+      else
+        removeUser(userID);
+
+    });
+    
+    var checkboxLabel = $('<label class="custom-control-label" for="checkbox-'+userID+'">&nbsp;</label>');
+    $(checkboxDiv).append(checkboxInput);
+    $(checkboxDiv).append(checkboxLabel);
+    $(elCheckbox).append(checkboxDiv);
+
+    //active
+    var elActive = document.createElement("div");
+    $(elActive).addClass("user-active active");
+    $(elActive).attr("id", "active-" + user._id);
+    $(elActive).attr("title", "online");
+    var activeIcon = $('<i class="fas fa-satellite-dish"></i>');
+    $(elActive).append(activeIcon);
+    $(elActive).click(function() {
+      var parent = $(this).parent();
+      var id = parent.attr("user-id");
+      if(!markers[id])
+        return;
+      var latLong = markers[id].getPosition();
+
+      
+      map.panTo(latLong);
+      animateZoomHelper(map, 15);
+    });
+
+    //pin
+    var elPin = document.createElement("div");
+    $(elPin).addClass("pin");
+
+    $(elPin).click(function(e) {
+      var parent = $(this).parent();
+      var id = parent.attr("user-id");
+      if(!markers[id])
+        return;
+
+      markers[id].setAnimation(google.maps.Animation.BOUNCE);
+      setTimeout(function(){ markers[id].setAnimation(null); }, 3000);
+    });
+    var elPinImg = document.createElement("img");
+    $(elPinImg).attr("src", "/images/"+color+".svg");
+    $(elPin).append(elPinImg);
+
+    //username
+    var elUserName = document.createElement("div");
+    $(elUserName).addClass("username");
+    $(elUserName).text(user.username);
+    $(elUserName).click(function() {
+      var parent = $(this).parent();
+      var id = parent.attr("user-id");
+      showUserInfo(id);
+    });
+    
+  
+    $(elUser).append(elCheckbox);
+    $(elUser).append(elUserName);
+    $(elUser).append(elActive);
+    $(elUser).append(elPin);
+
+    $(".user-list").append(elUser);
+  }
+
+  function removeUser(userID) {
+    //remove polyline
+    if(polylines[userID]) {
+      polylines[userID].setMap(null);
+      delete polylines[userID];
+    }
+    //remove marker
+    if(markers[userID]) {
+      markers[userID].setMap(null);
+      delete markers[userID];
+    }
+    unsubscribeUser(userID);
+  }
+
+  function removeAllUsers() {
+    for(var userID in markers) {
+      removeUser(userID);
+    }
+  }
+
+
+  $("#selectAllUsers").change(function () {
+    toggleAllCheckbox($(this).is(':checked'));
+  });
+
+  function toggleAllCheckbox(state) {
+    $(".user-list .user .checkbox input:checkbox").each(function() {
+      $(this).prop( "checked", state).change();
+    });
+    if(!state)
+      checkUserOnline(0);
+  }
+
+  function showUserInfo(userID) {
+    userPanelActive.userID = userID;
+    userPanelActive.isActive = true;
+    
+    openUserInfoPanel(users[userID]);
+    fillUserInfo(users[userID]);
+  }
+
+  // when user panel is open
+  function openUserInfoPanel(user) {
+    $("#userList .panel-content").css("transform", "translateX(-50%)");
+    $("#userList .nav-icon").html('<i class="fas fa-arrow-left"></i>');
+    $("#userList .title").text(user.username);
+    $("#userList .user-info").css("border-bottom-color", "#" + user.color.hex[0]);
+  }
+
+  function fillUserInfo(user) {
+    $("#userPin").attr("src", "/images/"+ user.color.name + ".svg");
+    $("#userClickPin").attr("user-id", user._id);
+    $("#userFollow").attr("user-id", user._id);
+    setUserInfoState(lastLocations[user._id].isActive);
+    setUserInfoLocation(lastLocations[user._id].location);
+
+    $("#userMapLink").attr("value", "http://"+IP+":3000/map/user/" + user._id);
+    $("#openUserMapLink").attr("href", "/map/user/" + user._id);
+    $("#copyUserMapLink").text("Skopiuj link");
+    $("#openUserTracksLink").attr("href", "/map/user/" + user._id + "/tracks");
+
+    if(followUser.isActive && followUser.userID === user._id)
+      $("#userFollow").addClass("active");
+    else
+      $("#userFollow").removeClass("active");
+    
+  }
+
+  function setUserInfoState(state) {
+    //console.log("info online " + state );
+    if(state) {
+      $("#userOnline").addClass("active");
+      $("#userOnlineDesc").text("ONLINE");
+    }
+    else {
+      $("#userOnline").removeClass("active");
+      $("#userOnlineDesc").text("OFFLINE");
+    }
+  }
+  function setUserInfoLocation(location) {
+    $("#userLatitude").text(location.latitude);
+    $("#userLongitude").text(location.longitude);
+    $("#userSpeed").text(formatSpeed(location.speed));
+    $("#userAltitude").text(Math.round(location.altitude));
+    $("#userAccuracy").text(Math.round(location.accuracy));
+  }
+
+
+  $("#userList .nav-icon").click(function () {
+    userPanelActive.isActive = false;
+    closeUserInfoPanel();
+  });
+
+  function closeUserInfoPanel(title) {
+    $("#userList .panel-content").css("transform", "translateX(0)");
+    //$("#userList .nav-icon").css("visibility", "hidden");
+    $("#userList .nav-icon").html('<i class="fas fa-users"></i>');
+    $("#userList .title").html('Aktywni użytkownicy (<span id="userCount">0</span>)');
+
+    checkUserOnline();
+  }
+
+  $("#userClickPin").click(function () {
+    var userID = $(this).attr("user-id");
+    if(!markers[userID])
+      return;
+
+    var latLong = markers[userID].getPosition();
+    
+    map.panTo(latLong);
+    animateZoomHelper(map, 17);
+  });
+
+  $("#userFollow").click(function () {
+    var userID = $(this).attr("user-id");
+    if(!markers[userID])
+      return;
+
+    if(followUser.isActive) {
+      followUser.isActive = false;
+      $("#userFollow").removeClass("active");
+
+      if(followUser.userID !== userID) { // follow another user
+        prepareFollowUser(userID);
+      }
+    }
+    else {
+      prepareFollowUser(userID);
+    }
+  });
+
+  function prepareFollowUser(userID) {
+    var latLong = markers[userID].getPosition();
+
+    map.panTo(latLong);
+    animateZoomHelper(map, 17);
+
+    followUser.userID = userID;
+    followUser.isActive = true;
+    $("#userFollow").addClass("active");
+  }
+
+  function unfollowUser(userID) {
+    followUser.isActive = false;
+  }
+
+  $("#copyUserMapLink").click(function () {
+    $("#userMapLink").select();
+    document.execCommand('copy');
+    $("#userMapLink").blur();
+    $("#copyUserMapLink").text("Skopiowano");
+  });
+
+  resetClients(); // reset clients on the server
+  function resetClients() {
+    var url = "http://"+IP+":8080/api/other/reset";
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+    xhr.responseType = 'json';
+    xhr.onload = function () {};
+    
+    xhr.send();
+  }
+
+  loadMap();
+  loadUsers();
+  startCheckUserOnline();
+  //if after 2s empty-list won't disable (because of inactive users) show label
+  setTimeout(function(){ $("#userList .empty-list").css("opacity", "1");}, 2000);
+
+});
+
+</script>
+
+
+
+<% include tiles/footer %>

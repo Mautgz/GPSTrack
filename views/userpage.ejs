@@ -1,0 +1,26 @@
+<% include tiles/header %>
+<% include tiles/top %>
+
+<div class="container">
+    <div class="row">
+      
+      <div id="sidebar" class="col-md-4">
+          <% include tiles/sidebar %>
+      </div>
+      <div class="col-md-8">
+        userpage: 
+        <%= user.isLoggedIn %>,
+        <%= user.email %>
+      </div>
+    </div>
+  </div>
+
+<% include tiles/footerScript %>
+
+<script>
+$(function() {
+  //alert("<= action %>");
+});
+</script>
+
+<% include tiles/footer %>

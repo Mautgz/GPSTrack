@@ -5,10 +5,3 @@
 - EJS 
 - WebSocket (STOMP) en el lado del cliente
 
-Screenshots:
-
-![ss](https://radd.github.io/other/images/gps-webapp/1.png)
-![ss](https://radd.github.io/other/images/gps-webapp/2.png)
-![ss](https://radd.github.io/other/images/gps-webapp/3.png)
-![ss](https://radd.github.io/other/images/gps-webapp/4.png)
-![ss](https://radd.github.io/other/images/gps-webapp/5.png)
